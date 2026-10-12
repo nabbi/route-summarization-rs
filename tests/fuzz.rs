@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{Rng, addr_text, host_mask, prefix_range, run_cases, union, v6_exploded};
+use common::{Rng, addr_text, host_mask, run_cases, union, v6_exploded};
 use route_summarization::{Aggregator, Family, Prefix, Range, parse_entry};
 
 /// A random range in `family`, biased toward clustered, overlapping and
@@ -38,11 +38,7 @@ fn random_range(rng: &mut Rng, family: Family, base: u128) -> Range {
         let span_bits = rng.range(0, 14);
         let span = u128::from(rng.below(1 << span_bits));
         let end = addr.saturating_add(span).min(max);
-        return Range {
-            family,
-            start: addr,
-            end,
-        };
+        return Range::new(family, addr, end).unwrap();
     }
     let len = if rng.chance(3) {
         rng.range(0, bits)
@@ -50,11 +46,7 @@ fn random_range(rng: &mut Rng, family: Family, base: u128) -> Range {
         rng.range(bits - 14, bits)
     } as u8;
     let host = host_mask(family, len);
-    Range {
-        family,
-        start: addr & !host,
-        end: (addr & !host) | host,
-    }
+    Range::new(family, addr & !host, (addr & !host) | host).unwrap()
 }
 
 /// Exact: output covers precisely the input addresses.
@@ -62,27 +54,58 @@ fn random_range(rng: &mut Rng, family: Family, base: u128) -> Range {
 /// (Any coverable parent block would contain a sibling pair at its deepest
 /// split, so "no siblings" implies no merge is possible.)
 fn check(family: Family, input: &[Range], out: &[Prefix]) {
-    let want = union(input.iter().map(|r| (r.start, r.end)).collect());
+    check_against(family, union(intervals(input)), out);
+}
+
+fn intervals(rs: &[Range]) -> Vec<(u128, u128)> {
+    rs.iter().map(|r| (r.start(), r.end())).collect()
+}
+
+/// Naive set difference, written independently of the library's sweep: chop
+/// every exclusion out of every interval, one pair at a time.
+fn naive_subtract(mut set: Vec<(u128, u128)>, exclude: &[(u128, u128)]) -> Vec<(u128, u128)> {
+    for &(xs, xe) in exclude {
+        let mut next = Vec::new();
+        for (s, e) in set {
+            if xe < s || xs > e {
+                next.push((s, e));
+                continue;
+            }
+            if s < xs {
+                next.push((s, xs - 1));
+            }
+            if e > xe {
+                next.push((xe + 1, e));
+            }
+        }
+        set = next;
+    }
+    union(set)
+}
+
+fn check_against(family: Family, want: Vec<(u128, u128)>, out: &[Prefix]) {
     let got_blocks: Vec<Range> = out
         .iter()
-        .filter(|p| p.family == family)
-        .map(prefix_range)
+        .filter(|p| p.family() == family)
+        .map(Prefix::range)
         .collect();
-    let got = union(got_blocks.iter().map(|r| (r.start, r.end)).collect());
+    let got = union(got_blocks.iter().map(|r| (r.start(), r.end())).collect());
     assert_eq!(want, got, "{family:?} coverage differs");
 
-    let ps: Vec<&Prefix> = out.iter().filter(|p| p.family == family).collect();
+    let ps: Vec<&Prefix> = out.iter().filter(|p| p.family() == family).collect();
     for p in &ps {
-        assert!(p.len <= family.bits());
-        assert_eq!(p.addr & host_mask(family, p.len), 0, "unaligned {p}");
+        let (addr, len) = (p.range().start(), p.prefix_len());
+        assert!(len <= family.bits());
+        assert_eq!(addr & host_mask(family, len), 0, "unaligned {p}");
     }
     for w in got_blocks.windows(2) {
-        assert!(w[0].end < w[1].start, "unsorted or overlapping output");
+        assert!(w[0].end() < w[1].start(), "unsorted or overlapping output");
     }
     for w in ps.windows(2) {
         let (a, b) = (w[0], w[1]);
+        let (len, a_addr, b_addr) = (a.prefix_len(), a.range().start(), b.range().start());
         let sibling =
-            a.len == b.len && a.len > 0 && a.addr ^ b.addr == 1u128 << (family.bits() - a.len);
+            len == b.prefix_len() && len > 0 && a_addr ^ b_addr == 1u128 << (family.bits() - len);
         assert!(!sibling, "mergeable siblings {a} {b}");
     }
 }
@@ -110,11 +133,44 @@ fn aggregation_is_exact_and_minimal() {
         // IPv4 strictly before IPv6.
         let first_v6 = out
             .iter()
-            .position(|p| p.family == Family::V6)
+            .position(|p| p.family() == Family::V6)
             .unwrap_or(out.len());
-        assert!(out[first_v6..].iter().all(|p| p.family == Family::V6));
+        assert!(out[first_v6..].iter().all(|p| p.family() == Family::V6));
         check(Family::V4, &v4, &out);
         check(Family::V6, &v6, &out);
+    });
+}
+
+#[test]
+fn exclusion_is_exact_set_difference() {
+    run_cases("exclusion_is_exact_set_difference", 2000, |rng| {
+        let base4 = u128::from(rng.next() as u32) & !0xfff;
+        let base6 = rng.u128() & !0xfff;
+        let mut agg = Aggregator::new();
+        let (mut inc4, mut inc6, mut exc4, mut exc6) = (vec![], vec![], vec![], vec![]);
+        // Calls interleave in random order; the result must not depend on it.
+        for _ in 0..rng.range(1, 150) {
+            let family = random_family(rng);
+            let base = if family == Family::V4 { base4 } else { base6 };
+            let r = random_range(rng, family, base);
+            let excluding = rng.chance(35);
+            match (excluding, family) {
+                (false, Family::V4) => inc4.push(r),
+                (false, Family::V6) => inc6.push(r),
+                (true, Family::V4) => exc4.push(r),
+                (true, Family::V6) => exc6.push(r),
+            }
+            if excluding {
+                agg.exclude(r);
+            } else {
+                agg.add(r);
+            }
+        }
+        let out = agg.summarize();
+        let want4 = naive_subtract(union(intervals(&inc4)), &intervals(&exc4));
+        let want6 = naive_subtract(union(intervals(&inc6)), &intervals(&exc6));
+        check_against(Family::V4, want4, &out);
+        check_against(Family::V6, want6, &out);
     });
 }
 
@@ -169,15 +225,15 @@ fn display_round_trips_through_parse() {
             u128::MAX
         };
         let addr = rng.u128() & max & !host_mask(family, len);
-        let p = Prefix { family, addr, len };
+        let p = Prefix::new(family, addr, len).unwrap();
         let text = p.to_string();
-        assert_eq!(parse_entry(&text, false), Ok(prefix_range(&p)), "{text}");
+        assert_eq!(parse_entry(&text, false), Ok(p.range()), "{text}");
         // SPF form round-trips too.
         let spf = format!(
             "{}:{text}",
             if family == Family::V4 { "ip4" } else { "ip6" }
         );
-        assert_eq!(parse_entry(&spf, true), Ok(prefix_range(&p)), "{spf}");
+        assert_eq!(parse_entry(&spf, true), Ok(p.range()), "{spf}");
         // RFC 5952: lowercase, and never a `::` standing in for one group.
         if family == Family::V6 {
             assert!(!text.bytes().any(|b| b.is_ascii_uppercase()), "{text}");
@@ -235,9 +291,9 @@ fn arbitrary_input_never_panics() {
         }
         for spf in [false, true] {
             if let Ok(r) = parse_entry(&s, spf) {
-                assert!(r.start <= r.end, "{s:?}");
-                if r.family == Family::V4 {
-                    assert!(r.end <= u128::from(u32::MAX), "{s:?}");
+                assert!(r.start() <= r.end(), "{s:?}");
+                if r.family() == Family::V4 {
+                    assert!(r.end() <= u128::from(u32::MAX), "{s:?}");
                 }
             }
         }

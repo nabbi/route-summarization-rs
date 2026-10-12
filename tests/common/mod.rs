@@ -4,7 +4,7 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use route_summarization::{Family, Prefix, Range};
+use route_summarization::Family;
 
 /// xorshift64* — small, deterministic, dependency-free.
 pub struct Rng(u64);
@@ -79,14 +79,6 @@ pub fn host_mask(family: Family, len: u8) -> u128 {
         u128::MAX
     } else {
         (1u128 << host_bits) - 1
-    }
-}
-
-pub fn prefix_range(p: &Prefix) -> Range {
-    Range {
-        family: p.family,
-        start: p.addr,
-        end: p.addr | host_mask(p.family, p.len),
     }
 }
 

@@ -1,0 +1,17 @@
+# IPv4 space that is never valid as a public source or destination:
+# special-purpose blocks (RFC 6890 and the IANA special-purpose registry),
+# multicast, and reserved space. Useful to scrub third-party lists.
+0.0.0.0/8           # "this network" (RFC 791, RFC 1122)
+10.0.0.0/8          # private (RFC 1918)
+100.64.0.0/10       # shared address space / CGNAT (RFC 6598)
+127.0.0.0/8         # loopback (RFC 1122)
+169.254.0.0/16      # link-local (RFC 3927)
+172.16.0.0/12       # private (RFC 1918)
+192.0.0.0/24        # IETF protocol assignments (RFC 6890)
+192.0.2.0/24        # TEST-NET-1 documentation (RFC 5737)
+192.168.0.0/16      # private (RFC 1918)
+198.18.0.0/15       # benchmarking (RFC 2544)
+198.51.100.0/24     # TEST-NET-2 documentation (RFC 5737)
+203.0.113.0/24      # TEST-NET-3 documentation (RFC 5737)
+224.0.0.0/4         # multicast (RFC 5771)
+240.0.0.0/4         # reserved, includes 255.255.255.255 broadcast (RFC 1112, RFC 919)

@@ -1,0 +1,11 @@
+# IPv6 space that is never valid as a public source or destination
+# (RFC 6890 and the IANA IPv6 special-purpose registry).
+::/128              # unspecified (RFC 4291)
+::1/128             # loopback (RFC 4291)
+::ffff:0:0/96       # IPv4-mapped (RFC 4291)
+100::/64            # discard-only (RFC 6666)
+2001:db8::/32       # documentation (RFC 3849)
+3fff::/20           # documentation (RFC 9637)
+fc00::/7            # unique local (RFC 4193)
+fe80::/10           # link-local unicast (RFC 4291)
+ff00::/8            # multicast (RFC 4291)

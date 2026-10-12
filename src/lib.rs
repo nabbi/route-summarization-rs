@@ -43,31 +43,90 @@ impl Family {
     }
 }
 
-/// An inclusive address range within one family, as accepted from input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// An inclusive address range within one family. Always valid: `start <= end`,
+/// both within the family's address space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Range {
-    pub family: Family,
-    pub start: u128,
-    pub end: u128,
+    family: Family,
+    start: u128,
+    end: u128,
 }
 
-/// A CIDR prefix. Displays host routes (/32, /128) as a bare address.
+impl Range {
+    /// A range of numeric addresses; `None` unless `start <= end` and both fit
+    /// the family (IPv4 values must be at most `u32::MAX`).
+    pub fn new(family: Family, start: u128, end: u128) -> Option<Self> {
+        (start <= end && end <= family.max()).then_some(Self { family, start, end })
+    }
+
+    /// The range between two addresses of the same family, in either order.
+    pub fn from_ips(a: IpAddr, b: IpAddr) -> Option<Self> {
+        let ((fa, a), (fb, b)) = (from_ip(a), from_ip(b));
+        (fa == fb).then(|| Self {
+            family: fa,
+            start: a.min(b),
+            end: a.max(b),
+        })
+    }
+
+    pub fn family(&self) -> Family {
+        self.family
+    }
+
+    /// First address, as an integer.
+    pub fn start(&self) -> u128 {
+        self.start
+    }
+
+    /// Last address (inclusive), as an integer.
+    pub fn end(&self) -> u128 {
+        self.end
+    }
+}
+
+/// A CIDR prefix with no host bits set. Displays host routes (/32, /128) as a
+/// bare address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Prefix {
-    pub family: Family,
-    pub addr: u128,
-    pub len: u8,
+    family: Family,
+    addr: u128,
+    len: u8,
 }
 
 impl Prefix {
+    /// `None` if `len` exceeds the family's width, `addr` does not fit the
+    /// family, or `addr` has bits set beyond the prefix length.
+    pub fn new(family: Family, addr: u128, len: u8) -> Option<Self> {
+        (len <= family.bits() && addr <= family.max() && addr & host_mask(family, len) == 0)
+            .then_some(Self { family, addr, len })
+    }
+
+    pub fn family(&self) -> Family {
+        self.family
+    }
+
     /// The prefix's network address.
     pub fn network(&self) -> IpAddr {
         to_ip(self.family, self.addr)
     }
 
+    /// Prefix length in bits.
+    pub fn prefix_len(&self) -> u8 {
+        self.len
+    }
+
     /// True when the prefix covers a single address.
     pub fn is_host(&self) -> bool {
         self.len == self.family.bits()
+    }
+
+    /// The addresses the prefix covers.
+    pub fn range(&self) -> Range {
+        Range {
+            family: self.family,
+            start: self.addr,
+            end: self.addr | host_mask(self.family, self.len),
+        }
     }
 }
 
@@ -85,6 +144,7 @@ impl fmt::Display for Prefix {
 
 /// Why an input line was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParseError {
     /// Not an IPv4 or IPv6 address.
     InvalidAddress,
@@ -138,14 +198,10 @@ pub fn parse_entry(input: &str, spf: bool) -> Result<Range, ParseError> {
     let range = if let Some((a, b)) = s.split_once('-') {
         let (fa, start) = parse_addr(a.trim())?;
         let (fb, end) = parse_addr(b.trim())?;
-        if fa != fb || start > end {
+        if fa != fb {
             return Err(ParseError::InvalidRange);
         }
-        Range {
-            family: fa,
-            start,
-            end,
-        }
+        Range::new(fa, start, end).ok_or(ParseError::InvalidRange)?
     } else if let Some((a, len)) = s.split_once('/') {
         let (family, addr) = parse_addr(a)?;
         let len = parse_len(len, family)?;
@@ -171,10 +227,49 @@ pub fn parse_entry(input: &str, spf: bool) -> Result<Range, ParseError> {
 }
 
 /// Collects ranges and produces the minimal covering prefix list.
+///
+/// Exclusions are subtracted address by address: the summary covers exactly
+/// the added addresses minus the excluded ones, whatever the order of calls
+/// and however the inputs overlap. A prefix that partly overlaps an exclusion
+/// is split around it.
+///
+/// ```
+/// use route_summarization::Aggregator;
+///
+/// let mut agg = Aggregator::new();
+/// agg.add_str("192.0.2.0/24", false).unwrap();
+/// agg.exclude_str("192.0.2.0/25", false).unwrap();
+/// agg.exclude_str("192.0.2.255", false).unwrap();
+/// let out: Vec<String> = agg.summarize().iter().map(|p| p.to_string()).collect();
+/// assert_eq!(out, ["192.0.2.128/26", "192.0.2.192/27", "192.0.2.224/28",
+///                  "192.0.2.240/29", "192.0.2.248/30", "192.0.2.252/31", "192.0.2.254"]);
+/// ```
 #[derive(Debug, Default, Clone)]
 pub struct Aggregator {
+    include: Ranges,
+    exclude: Ranges,
+}
+
+#[derive(Debug, Default, Clone)]
+struct Ranges {
     v4: Vec<(u128, u128)>,
     v6: Vec<(u128, u128)>,
+}
+
+impl Ranges {
+    fn push(&mut self, r: Range) {
+        match r.family {
+            Family::V4 => self.v4.push((r.start, r.end)),
+            Family::V6 => self.v6.push((r.start, r.end)),
+        }
+    }
+
+    fn get(&self, family: Family) -> &[(u128, u128)] {
+        match family {
+            Family::V4 => &self.v4,
+            Family::V6 => &self.v6,
+        }
+    }
 }
 
 impl Aggregator {
@@ -183,10 +278,7 @@ impl Aggregator {
     }
 
     pub fn add(&mut self, r: Range) {
-        match r.family {
-            Family::V4 => self.v4.push((r.start, r.end)),
-            Family::V6 => self.v6.push((r.start, r.end)),
-        }
+        self.include.push(r);
     }
 
     /// Parse and add one entry; see [`parse_entry`].
@@ -195,23 +287,40 @@ impl Aggregator {
         Ok(())
     }
 
+    /// Remove these addresses from the summary, wherever they appear.
+    pub fn exclude(&mut self, r: Range) {
+        self.exclude.push(r);
+    }
+
+    /// Parse and exclude one entry; see [`parse_entry`].
+    pub fn exclude_str(&mut self, input: &str, spf: bool) -> Result<(), ParseError> {
+        self.exclude(parse_entry(input, spf)?);
+        Ok(())
+    }
+
+    /// True when nothing has been added (exclusions alone don't count).
     pub fn is_empty(&self) -> bool {
-        self.v4.is_empty() && self.v6.is_empty()
+        self.include.v4.is_empty() && self.include.v6.is_empty()
     }
 
     /// Minimal CIDR list: all IPv4 first, then IPv6, each in address order.
     pub fn summarize(&self) -> Vec<Prefix> {
-        let mut out = summarize_family(Family::V4, &self.v4);
-        out.extend(summarize_family(Family::V6, &self.v6));
+        let mut out = Vec::new();
+        for family in [Family::V4, Family::V6] {
+            let include = merge(self.include.get(family));
+            let exclude = merge(self.exclude.get(family));
+            for (start, end) in subtract(&include, &exclude) {
+                split(family, start, end, &mut out);
+            }
+        }
         out
     }
 }
 
-fn summarize_family(family: Family, ranges: &[(u128, u128)]) -> Vec<Prefix> {
+/// Sort and merge overlapping or adjacent ranges.
+fn merge(ranges: &[(u128, u128)]) -> Vec<(u128, u128)> {
     let mut sorted = ranges.to_vec();
     sorted.sort_unstable();
-
-    // Merge overlapping and adjacent ranges.
     let mut merged: Vec<(u128, u128)> = Vec::with_capacity(sorted.len());
     for (start, end) in sorted {
         match merged.last_mut() {
@@ -219,50 +328,78 @@ fn summarize_family(family: Family, ranges: &[(u128, u128)]) -> Vec<Prefix> {
             _ => merged.push((start, end)),
         }
     }
+    merged
+}
 
-    // Split each merged range into the fewest aligned CIDR blocks.
-    let width = u32::from(family.bits());
-    let mut out = Vec::new();
-    for (mut start, end) in merged {
-        loop {
-            let align = if start == 0 {
-                width
-            } else {
-                start.trailing_zeros().min(width)
-            };
-            let span = end - start; // block size minus one
-            let fit = if span == u128::MAX {
-                128
-            } else {
-                127 - (span + 1).leading_zeros()
-            };
-            let block = align.min(fit);
-            out.push(Prefix {
-                family,
-                addr: start,
-                len: (width - block) as u8,
-            });
-            match 1u128
-                .checked_shl(block)
-                .and_then(|size| start.checked_add(size))
-            {
-                Some(next) if next <= end && next <= family.max() => start = next,
-                _ => break,
+/// `include` minus `exclude`; both sorted, merged and disjoint.
+fn subtract(include: &[(u128, u128)], exclude: &[(u128, u128)]) -> Vec<(u128, u128)> {
+    let mut out = Vec::with_capacity(include.len());
+    let mut first = 0; // first exclusion that can still overlap
+    for &(mut start, end) in include {
+        while first < exclude.len() && exclude[first].1 < start {
+            first += 1;
+        }
+        let mut alive = true;
+        for &(x_start, x_end) in exclude[first..].iter().take_while(|x| x.0 <= end) {
+            if x_start > start {
+                out.push((start, x_start - 1));
             }
+            if x_end >= end {
+                alive = false;
+                break;
+            }
+            start = x_end + 1; // x_end < end, so no overflow
+        }
+        if alive {
+            out.push((start, end));
         }
     }
     out
 }
 
+/// Append the fewest aligned CIDR blocks covering `start..=end`.
+fn split(family: Family, mut start: u128, end: u128, out: &mut Vec<Prefix>) {
+    let width = u32::from(family.bits());
+    loop {
+        let align = if start == 0 {
+            width
+        } else {
+            start.trailing_zeros().min(width)
+        };
+        let span = end - start; // block size minus one
+        let fit = if span == u128::MAX {
+            128
+        } else {
+            127 - (span + 1).leading_zeros()
+        };
+        let block = align.min(fit);
+        out.push(Prefix {
+            family,
+            addr: start,
+            len: (width - block) as u8,
+        });
+        match 1u128
+            .checked_shl(block)
+            .and_then(|size| start.checked_add(size))
+        {
+            Some(next) if next <= end && next <= family.max() => start = next,
+            _ => break,
+        }
+    }
+}
+
 fn parse_addr(s: &str) -> Result<(Family, u128), ParseError> {
     // std rejects IPv4 leading zeros and IPv6 zone IDs; accepts embedded IPv4
     // in IPv6 (`::ffff:192.0.2.1`).
-    match s
-        .parse::<IpAddr>()
-        .map_err(|_| ParseError::InvalidAddress)?
-    {
-        IpAddr::V4(a) => Ok((Family::V4, u128::from(u32::from(a)))),
-        IpAddr::V6(a) => Ok((Family::V6, u128::from(a))),
+    s.parse::<IpAddr>()
+        .map(from_ip)
+        .map_err(|_| ParseError::InvalidAddress)
+}
+
+fn from_ip(ip: IpAddr) -> (Family, u128) {
+    match ip {
+        IpAddr::V4(a) => (Family::V4, u128::from(u32::from(a))),
+        IpAddr::V6(a) => (Family::V6, u128::from(a)),
     }
 }
 
@@ -456,5 +593,126 @@ mod tests {
                 assert!(!sibling, "mergeable siblings {x} {y}");
             }
         }
+    }
+
+    #[test]
+    fn constructors_reject_invalid_values() {
+        assert!(Range::new(Family::V4, 0, u128::from(u32::MAX)).is_some());
+        assert!(Range::new(Family::V4, 1 << 40, 1 << 40).is_none());
+        assert!(Range::new(Family::V6, 10, 5).is_none());
+        assert!(Range::new(Family::V6, 0, u128::MAX).is_some());
+
+        let (a, b) = ("10.0.0.9".parse().unwrap(), "10.0.0.1".parse().unwrap());
+        assert_eq!(
+            Range::from_ips(a, b),
+            Range::new(Family::V4, 0x0a00_0001, 0x0a00_0009)
+        );
+        assert!(Range::from_ips(a, "::1".parse().unwrap()).is_none());
+
+        assert!(Prefix::new(Family::V4, 0x0a00_0000, 8).is_some());
+        assert!(Prefix::new(Family::V4, 0x0a00_0001, 8).is_none()); // host bits
+        assert!(Prefix::new(Family::V4, 0, 33).is_none());
+        assert!(Prefix::new(Family::V4, 1 << 32, 32).is_none());
+        assert!(Prefix::new(Family::V6, 0, 129).is_none());
+        assert_eq!(
+            Prefix::new(Family::V4, 0x0a00_0000, 24).unwrap().range(),
+            Range::new(Family::V4, 0x0a00_0000, 0x0a00_00ff).unwrap()
+        );
+    }
+
+    fn agg_excluding(include: &[&str], exclude: &[&str]) -> Vec<String> {
+        let mut a = Aggregator::new();
+        include.iter().for_each(|l| a.add_str(l, false).unwrap());
+        exclude
+            .iter()
+            .for_each(|l| a.exclude_str(l, false).unwrap());
+        a.summarize().iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn exclusion_splits_overlapping_prefixes() {
+        assert_eq!(
+            agg_excluding(&["10.0.0.0/24"], &["10.0.0.0/25"]),
+            ["10.0.0.128/25"]
+        );
+        assert_eq!(
+            agg_excluding(&["10.0.0.0/30"], &["10.0.0.1"]),
+            ["10.0.0.0", "10.0.0.2/31"]
+        );
+        // Merged first, then subtracted: the /31 from two hosts loses one.
+        assert_eq!(
+            agg_excluding(&["140.82.112.2", "140.82.112.3"], &["140.82.112.3"]),
+            ["140.82.112.2"]
+        );
+        // One exclusion spanning several separate inputs.
+        assert_eq!(
+            agg_excluding(
+                &["10.0.0.0/24", "10.0.2.0/24", "10.0.4.0/24"],
+                &["10.0.0.128-10.0.4.127"]
+            ),
+            ["10.0.0.0/25", "10.0.4.128/25"]
+        );
+        // Several exclusions inside one input.
+        assert_eq!(
+            agg_excluding(&["10.0.0.0/29"], &["10.0.0.1", "10.0.0.6"]),
+            ["10.0.0.0", "10.0.0.2/31", "10.0.0.4/31", "10.0.0.7"]
+        );
+    }
+
+    #[test]
+    fn exclusion_boundaries() {
+        // Adjacent but not overlapping: no effect.
+        assert_eq!(
+            agg_excluding(&["10.0.0.0/24"], &["10.0.1.0/24", "9.255.255.255"]),
+            ["10.0.0.0/24"]
+        );
+        // Superset or equal: everything goes.
+        assert!(agg_excluding(&["10.1.0.0/16"], &["10.0.0.0/8"]).is_empty());
+        assert!(agg_excluding(&["10.0.0.0/8"], &["10.0.0.0/8"]).is_empty());
+        // Exclusions alone produce nothing.
+        assert!(agg_excluding(&[], &["10.0.0.0/8"]).is_empty());
+        // Other family is untouched.
+        assert_eq!(
+            agg_excluding(&["2001:db8::/32"], &["0.0.0.0/0"]),
+            ["2001:db8::/32"]
+        );
+        assert_eq!(agg_excluding(&["10.0.0.0/8"], &["::/0"]), ["10.0.0.0/8"]);
+    }
+
+    #[test]
+    fn exclusion_at_address_space_edges() {
+        let v4 = agg_excluding(&["0.0.0.0/0"], &["0.0.0.0", "255.255.255.255"]);
+        assert_eq!(v4.first().unwrap(), "0.0.0.1");
+        assert_eq!(v4.last().unwrap(), "255.255.255.254");
+        assert_eq!(v4.len(), 62); // 31 blocks climbing up, 31 back down
+
+        let v6 = agg_excluding(
+            &["::/0"],
+            &["::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"],
+        );
+        assert_eq!(v6.first().unwrap(), "::1");
+        assert_eq!(
+            v6.last().unwrap(),
+            "ffff:ffff:ffff:ffff:ffff:ffff:ffff:fffe"
+        );
+        assert_eq!(v6.len(), 254);
+
+        assert_eq!(agg_excluding(&["::/0"], &["::/1"]), ["8000::/1"]);
+        assert_eq!(agg_excluding(&["::/0"], &["8000::/1"]), ["::/1"]);
+    }
+
+    #[test]
+    fn exclusion_is_order_independent() {
+        let mut a = Aggregator::new();
+        a.exclude_str("10.0.0.5", false).unwrap();
+        a.add_str("10.0.0.0/29", false).unwrap();
+        let mut b = Aggregator::new();
+        b.add_str("10.0.0.0/29", false).unwrap();
+        b.exclude_str("10.0.0.5", false).unwrap();
+        assert_eq!(a.summarize(), b.summarize());
+        assert!(!a.is_empty());
+        let mut only_excludes = Aggregator::new();
+        only_excludes.exclude_str("10.0.0.0/8", false).unwrap();
+        assert!(only_excludes.is_empty());
     }
 }

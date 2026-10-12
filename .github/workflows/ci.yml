@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    strategy:
+      matrix:
+        toolchain: [stable, "1.85"] # 1.85 = rust-version (MSRV)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - run: cargo test --locked
+      - name: Long fuzz run
+        if: matrix.toolchain == 'stable'
+        run: FUZZ_ITERS=20000 cargo test --release --locked --test fuzz
+
+  differential:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: nabbi/route-summarization
+          path: perl
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libnet-cidr-lite-perl
+      - run: cargo test --release --locked --test differential -- --ignored
+        env:
+          PERL_AGGREGATE: ${{ github.workspace }}/perl/aggregateCIDR.pl
+          FUZZ_ITERS: "1000"

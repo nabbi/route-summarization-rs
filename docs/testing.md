@@ -3,14 +3,15 @@
 | Suite | What it checks |
 |---|---|
 | `src/lib.rs` unit tests | parsing, formatting, edge cases, each fixed quirk |
-| `tests/cli.rs` | CLI behaviour; `tests/networks` is the Perl repo's fixture |
+| `tests/cli.rs` | CLI behaviour; `tests/networks` is the Perl repo's fixture; `tests/exclude/` lists |
 | `tests/fuzz.rs` | randomized properties against an independent oracle |
 | `tests/differential.rs` | randomized comparison with the Perl script (opt-in) |
 
 The fuzz harness uses no dependencies and runs with every `cargo test`. Each
 case checks that the output covers exactly the input addresses, is minimal
 (sorted, aligned, disjoint, no mergeable siblings), doesn't depend on input
-order, and is stable when fed back in. It also checks that formatting
+order, and is stable when fed back in. With exclusions, the output must equal a
+naive pairwise set difference computed separately from the library's sweep. It also checks that formatting
 round-trips through the parser and follows RFC 5952, and that arbitrary input
 never panics.
 
@@ -30,3 +31,9 @@ one (or set `PERL_AGGREGATE`):
 cargo test --release --test differential -- --ignored
 PERL_AGGREGATE=/path/to/aggregateCIDR.pl FUZZ_ITERS=5000 cargo test --release --test differential -- --ignored
 ```
+
+## Doctests and `noexec` /tmp
+
+rustdoc builds doctests in the temp directory and runs them from there, so
+they fail where `/tmp` is mounted `noexec`. `.cargo/config.toml` points
+`TMPDIR` at `target/` for cargo commands in this repo to avoid that.

@@ -1,0 +1,4 @@
+# IPv6 addresses that are local to a host, link or site.
+::1/128         # loopback (RFC 4291)
+fe80::/10       # link-local unicast (RFC 4291)
+fc00::/7        # unique local addresses, the IPv6 counterpart of RFC 1918 (RFC 4193)

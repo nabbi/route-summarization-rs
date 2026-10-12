@@ -1,0 +1,4 @@
+# rustdoc compiles doctests into the system temp dir and executes them there,
+# which fails (silently) where /tmp is mounted noexec. Keep them under target/.
+[env]
+TMPDIR = { value = "target", relative = true }
