@@ -6,10 +6,11 @@ rust-version = "1.85"
 description = "Aggregate IPv4/IPv6 CIDR prefixes into their minimal covering set, with SPF ip4:/ip6: support"
 license = "GPL-3.0-or-later"
 authors = ["Nic Boet"]
-homepage = "https://github.com/nabbi/route-summarization"
+repository = "https://github.com/nabbi/route-summarization-rs"
 readme = "README.md"
 keywords = ["cidr", "ip", "aggregation", "spf", "networking"]
 categories = ["command-line-utilities", "network-programming"]
+exclude = [".github/", ".cargo/"]
 
 [[bin]]
 name = "aggregate-cidr"
