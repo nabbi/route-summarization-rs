@@ -23,8 +23,7 @@ Requires Rust 1.85 or newer (the `rust-version` in `Cargo.toml`, checked in CI).
 
 The command-line options match `aggregateCIDR.pl`, so existing integrations
 that look the tool up by name (for example
-[postwhite](https://github.com/nabbi/postwhite) and
-[tcl-ipset](https://github.com/nabbi/tcl-ipset), which run
+[postwhite](https://github.com/nabbi/postwhite), which runs
 `which aggregateCIDR.pl`) can switch with a symlink:
 
 ```bash
@@ -46,13 +45,22 @@ Check these two changes before switching
   Callers using `-q`, as postwhite and tcl-ipset do, see no difference. Tcl's
   `exec` treats any stderr output as an error, so keep `-q` there.
 
-### Exclusion lists in tcl-ipset
+### tcl-ipset
 
-tcl-ipset's `exclude` list (used by `ipset-denylists.tcl` to keep GitHub and
-RFC 1918 space out of the denylist) is matched as exact strings after
-summarizing, so an excluded address inside a larger entry is still blocked.
-Passing the list to `--exclude` instead removes it exactly; see
-[Exclusions](usage.md#exclusions).
+Current [tcl-ipset](https://github.com/nabbi/tcl-ipset) needs no symlink: it
+runs the first of `aggregate-cidr` and `aggregateCIDR.pl` found on `PATH`, so
+installing the binary is enough. To roll back, remove `aggregate-cidr` from
+`PATH`.
+
+Its `exclude` list (used by `ipset-denylists.tcl` to keep GitHub and RFC 1918
+space out of the denylist) is passed as `--exclude`, so excluded addresses are
+removed exactly even when they fall inside a larger entry; see
+[Exclusions](usage.md#exclusions). An invalid exclusion makes the run fail
+before any set is changed.
+
+Older tcl-ipset, and current tcl-ipset falling back to the Perl version, match
+the `exclude` list as exact strings after summarizing, so an excluded address
+inside a larger entry (`140.82.112.3` in `140.82.112.2/31`) stays blocked.
 
 ### Verified integrations
 

@@ -61,9 +61,10 @@ doesn't depend on how entries are written, merged or ordered:
 
 ### Why exclusions split prefixes
 
-Matching exclusions against output strings, as tcl-ipset does, misses an
-excluded address whenever it is inside a larger entry: `140.82.112.3` never
-equals `140.82.112.2/31` or `140.82.112.0/24`, so it gets blocked anyway.
+Matching exclusions against output strings, as tcl-ipset did before it
+switched to `--exclude`, misses an excluded address whenever it is inside a
+larger entry: `140.82.112.3` never equals `140.82.112.2/31` or
+`140.82.112.0/24`, so it gets blocked anyway.
 Summarizing makes this more likely, but it isn't the cause: a `/24` on the
 input list has the same problem with no summarizing at all.
 
