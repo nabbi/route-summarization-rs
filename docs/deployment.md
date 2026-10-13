@@ -22,8 +22,9 @@ Requires Rust 1.85 or newer (the `rust-version` in `Cargo.toml`, checked in CI).
 ## Replacing the Perl version
 
 The command-line options match `aggregateCIDR.pl`, so existing integrations
-that look the tool up by name (for example
-[postwhite](https://github.com/nabbi/postwhite), which runs
+that look the tool up by name (for example older
+[postwhite](https://github.com/nabbi/postwhite) and
+[tcl-ipset](https://github.com/nabbi/tcl-ipset), which run
 `which aggregateCIDR.pl`) can switch with a symlink:
 
 ```bash
@@ -44,6 +45,17 @@ Check these two changes before switching
   `#` header lines to stdout; this version prints only prefixes to stdout.
   Callers using `-q`, as postwhite and tcl-ipset do, see no difference. Tcl's
   `exec` treats any stderr output as an error, so keep `-q` there.
+
+### postwhite
+
+Current [postwhite](https://github.com/nabbi/postwhite) needs no symlink:
+`postwhite` and `scrape_yahoo` run the first of `aggregate-cidr` and
+`aggregateCIDR.pl` found on `PATH`, and `postwhite` prints which one it used.
+To roll back, remove `aggregate-cidr` from `PATH`.
+
+If the summarizer fails, current postwhite exits before writing anything.
+Older postwhite ignored the failure and replaced the allowlist with an empty
+one.
 
 ### tcl-ipset
 
@@ -66,7 +78,8 @@ inside a larger entry (`140.82.112.3` in `140.82.112.2/31`) stays blocked.
 
 - **postwhite:** on its bundled data (`yahoo_static_hosts.txt` and the example
   CIDR tables), output with `--quiet --spf` is byte-identical to the Perl
-  version.
+  version. postwhite's own tests build `aggregate-cidr` from this repo in CI
+  and check that both tools give the same allowlist from the Yahoo! list.
 - **tcl-ipset:** running its `main` end to end (in an isolated network
   namespace) on about 2,700 mixed entries gave identical IPv4 host and network
   sets. The IPv6 set gained 4 networks that the Perl version silently lost:

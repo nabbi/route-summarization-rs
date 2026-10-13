@@ -2,13 +2,14 @@
 
 ## Switching over
 
-Current [tcl-ipset](https://github.com/nabbi/tcl-ipset) looks for
-`aggregate-cidr` first and falls back to `aggregateCIDR.pl`, so for it,
-installing the binary (step 1) is enough. It also passes its `exclude` list as
-`--exclude`; see [Deployment](deployment.md#tcl-ipset).
+Current [tcl-ipset](https://github.com/nabbi/tcl-ipset) and
+[postwhite](https://github.com/nabbi/postwhite) look for `aggregate-cidr`
+first and fall back to `aggregateCIDR.pl`, so for them, installing the binary
+(step 1) is enough. tcl-ipset also passes its `exclude` list as `--exclude`;
+see [Deployment](deployment.md#tcl-ipset).
 
 The command-line options match `aggregateCIDR.pl`, so anything else that runs
-the Perl script by name (postwhite, and older tcl-ipset, use
+the Perl script by name (older tcl-ipset and postwhite use
 `which aggregateCIDR.pl`) can switch with a symlink. No caller changes are
 needed.
 
