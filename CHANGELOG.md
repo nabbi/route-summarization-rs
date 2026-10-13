@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0
+## 0.1.0 - 2026-10-12
 
 First release: a Rust rewrite of
 [route-summarization](https://github.com/nabbi/route-summarization) (Perl).
