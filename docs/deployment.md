@@ -74,6 +74,9 @@ inside a larger entry (`140.82.112.3` in `140.82.112.2/31`) stays blocked.
   for a single zero group, which tcllib's `ip::is 6` (1.5.1) rejects, so
   tcl-ipset skipped them. This version prints the RFC 5952 form
   (`...:28:0/120`), which tcllib accepts.
+  tcl-ipset's own test suite now builds `aggregate-cidr` from this repo in
+  CI and checks its exclusions address by address, including a randomized
+  test that output equals input minus excluded addresses.
 
 ## Exit status
 
