@@ -1,5 +1,15 @@
 # Deployment
 
+## Install
+
+With Homebrew (macOS or Linux):
+
+```bash
+brew install nabbi/oubliette/route-summarization
+```
+
+Or from crates.io into `~/.cargo/bin`: `cargo install --locked route-summarization`.
+
 ## Build
 
 ```bash

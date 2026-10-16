@@ -109,6 +109,9 @@ for prefix in agg.summarize() {
 }
 ```
 
+[spf-flatten](https://github.com/nabbi/spf-flatten) uses the library this way
+to collapse the ranges an SPF record expands to.
+
 `parse_entry` turns one input line into a `Range`, and `Aggregator::add` takes
 ranges directly. `Aggregator::exclude` and `exclude_str` subtract ranges, in
 any order relative to `add`. `Range::new`, `Range::from_ips` and `Prefix::new` validate

@@ -16,9 +16,23 @@ To replace the Perl version in place, symlink it:
 `ln -sf /usr/local/bin/aggregate-cidr /usr/local/bin/aggregateCIDR.pl`
 ([details and rollback](docs/perl-differences.md#switching-over)).
 
-## Build
+Also used as a library by [spf-flatten](https://github.com/nabbi/spf-flatten),
+which flattens SPF records within the RFC 7208 lookup limits and aggregates the
+resulting ranges with this crate.
+
+## Install
+
+With Homebrew (macOS or Linux), from the
+[oubliette tap](https://github.com/nabbi/homebrew-oubliette):
 
 ```bash
+brew install nabbi/oubliette/route-summarization
+```
+
+Or with Cargo, or from a checkout:
+
+```bash
+cargo install --locked route-summarization
 cargo build --release --locked     # target/release/aggregate-cidr
 cargo test
 ```
