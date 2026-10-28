@@ -11,7 +11,11 @@ The fuzz harness uses no dependencies and runs with every `cargo test`. Each
 case checks that the output covers exactly the input addresses, is minimal
 (sorted, aligned, disjoint, no mergeable siblings), doesn't depend on input
 order, and is stable when fed back in. With exclusions, the output must equal a
-naive pairwise set difference computed separately from the library's sweep. It also checks that formatting
+naive pairwise set difference computed separately from the library's sweep. For
+`overlapping`, the result must equal a naive check of every pair, come out in
+address order whatever the input order, and agree with the aggregator: the
+unreported entries hold as many addresses as their union, and dropping a
+reported entry leaves at least one of its addresses still covered. It also checks that formatting
 round-trips through the parser and follows RFC 5952, and that arbitrary input
 never panics.
 
