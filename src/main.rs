@@ -5,7 +5,7 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use route_summarization::{Aggregator, Family};
+use route_summarization::{Aggregator, Family, overlapping, parse_entry};
 
 const USAGE: &str = "\
 usage: aggregate-cidr [OPTIONS] [FILE...]
@@ -21,11 +21,15 @@ options:
                       splitting any prefix that overlaps them; repeatable.
                       An invalid entry in FILE is an error, not skipped.
   -h, --help          print usage
+  -o, --overlap       instead of summarizing, print only the input entries
+                      that share an address with another entry (one inside
+                      another, partial overlap, or a duplicate), as written,
+                      in address order
   -q, --quiet         suppress warnings and hints on stderr
   -s, --spf           accept SPF ip4:/ip6: entries and print in SPF form
   -V, --version       print version
 
-Only prefixes are written to stdout; everything else goes to stderr.
+Only prefixes (or, with --overlap, entries) are written to stdout; everything else goes to stderr.
 ";
 
 /// Longest slice of a rejected entry echoed in a warning.
@@ -42,6 +46,7 @@ type Input = Option<PathBuf>;
 struct Opts {
     quiet: bool,
     spf: bool,
+    overlap: bool,
     inputs: Vec<Input>,
     excludes: Vec<Input>,
 }
@@ -50,6 +55,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Action, String
     let mut opts = Opts {
         quiet: false,
         spf: false,
+        overlap: false,
         inputs: Vec::new(),
         excludes: Vec::new(),
     };
@@ -62,6 +68,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Action, String
                 let version = concat!("aggregate-cidr ", env!("CARGO_PKG_VERSION"), "\n");
                 return Ok(Action::Print(version.into()));
             }
+            Some("-o" | "--overlap") => opts.overlap = true,
             Some("-q" | "--quiet") => opts.quiet = true,
             Some("-s" | "--spf") => opts.spf = true,
             Some("-x" | "--exclude") => match args.next() {
@@ -83,6 +90,9 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Action, String
     }
     if opts.inputs.is_empty() {
         opts.inputs.push(None);
+    }
+    if opts.overlap && !opts.excludes.is_empty() {
+        return Err("--overlap cannot be combined with --exclude".into());
     }
     if opts.inputs.contains(&None) && opts.excludes.contains(&None) {
         return Err("stdin cannot be both an input and an exclude list".into());
@@ -143,7 +153,33 @@ fn open(input: &Input, quiet: bool, what: &str) -> io::Result<(String, Box<dyn B
     }
 }
 
+/// Print the input entries that overlap another entry, as written.
+fn run_overlap(opts: &Opts) -> io::Result<()> {
+    let (mut ranges, mut entries) = (Vec::new(), Vec::new());
+    for input in &opts.inputs {
+        let (name, reader) = open(input, opts.quiet, "input")?;
+        for_each_entry(reader, |n, entry| match parse_entry(entry, opts.spf) {
+            Ok(r) => {
+                ranges.push(r);
+                entries.push(entry.to_owned());
+            }
+            Err(e) if !opts.quiet => eprintln!("{name}:{n}: ignoring '{}': {e}", echo(entry)),
+            Err(_) => {}
+        })
+        .map_err(with_name(&name))?;
+    }
+
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    for i in overlapping(&ranges) {
+        writeln!(out, "{}", entries[i])?;
+    }
+    out.flush()
+}
+
 fn run(opts: &Opts) -> io::Result<()> {
+    if opts.overlap {
+        return run_overlap(opts);
+    }
     let mut agg = Aggregator::new();
 
     // Exclusions first, so a bad exclude list fails before any input is read.

@@ -270,3 +270,39 @@ fn exclude_from_stdin_with_file_input() {
     std::fs::remove_file(&input).unwrap();
     assert_eq!(out, "10.0.0.1\n10.0.0.2/31\n");
 }
+
+#[test]
+fn overlap_prints_only_overlapping_entries_as_written() {
+    let input = "10.0.1.0/24 # inside the /23\n10.0.2.0/24\n10.0.0.0/23\n\
+                 192.0.2.1\n192.0.2.1\n198.51.100.0/24\n198.51.101.0/24\n\
+                 2001:db8::/32\n2001:DB8:1::/48\nbogus\n";
+    let out = run(&["--overlap"], input);
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "10.0.0.0/23\n10.0.1.0/24\n192.0.2.1\n192.0.2.1\n2001:db8::/32\n2001:DB8:1::/48\n"
+    );
+    assert!(
+        String::from_utf8(out.stderr)
+            .unwrap()
+            .contains("ignoring 'bogus'")
+    );
+    assert!(out.status.success());
+}
+
+#[test]
+fn overlap_with_spf_and_across_files() {
+    let path = std::env::temp_dir().join(format!("aggregate-cidr-overlap-{}", std::process::id()));
+    std::fs::write(&path, "ip4:10.0.0.0/23\n").unwrap();
+    let out = stdout(
+        &["-o", "-s", path.to_str().unwrap(), "-"],
+        "ip4:10.0.1.0/24\nip4:10.0.2.0/24\n",
+    );
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(out, "ip4:10.0.0.0/23\nip4:10.0.1.0/24\n");
+}
+
+#[test]
+fn overlap_rejects_exclude() {
+    let out = run(&["--overlap", "-x", "/dev/null"], "");
+    assert_eq!(out.status.code(), Some(2));
+}

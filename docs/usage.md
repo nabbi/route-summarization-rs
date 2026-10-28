@@ -7,12 +7,17 @@ aggregate-cidr < cidr.txt
 aggregate-cidr --spf spf-a.txt spf-b.txt
 cat list.txt | aggregate-cidr -q -        # `-` reads stdin
 aggregate-cidr -x tests/exclude/rfc1918.txt denylist.txt
+aggregate-cidr --overlap denylist.txt     # find redundant entries
 ```
 
 ```text
 -x, --exclude FILE  remove the addresses listed in FILE from the output,
                     splitting any prefix that overlaps them; repeatable
 -h, --help          print usage
+-o, --overlap       instead of summarizing, print only the input entries
+                    that share an address with another entry (one inside
+                    another, partial overlap, or a duplicate), as written,
+                    in address order
 -q, --quiet         suppress warnings and hints on stderr
 -s, --spf           accept SPF ip4:/ip6: entries and print in SPF form
 -V, --version       print version
@@ -39,6 +44,25 @@ ip4:203.0.113.0/25           # with --spf (case-insensitive)
 Minimal CIDR set, IPv4 first, then IPv6, each in address order. Host routes are
 printed as bare addresses in both families. IPv6 is formatted per
 [RFC 5952](https://www.rfc-editor.org/rfc/rfc5952).
+
+## Overlaps
+
+`--overlap` finds entries in a list that share addresses with another entry,
+across all input files. Instead of the summary, it prints those entries as
+written (comments removed) in address order, with wider entries before the
+ones they contain. Every entry involved is printed, so a nest such as a `/16`
+holding a `/24` holding a `/25` prints all three.
+
+| Input | Printed |
+|---|---|
+| `10.0.0.0/23`, `10.0.1.0/24` | both: the `/24` is inside the `/23` |
+| `192.0.2.1`, `192.0.2.1` | both: duplicates |
+| `10.0.0.0-10.0.0.9`, `10.0.0.9-10.0.0.20` | both: they share `10.0.0.9` |
+| `10.0.0.0/24`, `10.0.1.0/24` | nothing: adjacent, no address shared |
+| `0.0.0.0/0`, `::/0` | nothing: different families |
+
+Exit status and invalid-line warnings are the same as for summarizing.
+`--overlap` cannot be combined with `--exclude`.
 
 ## Exclusions
 
@@ -113,7 +137,8 @@ for prefix in agg.summarize() {
 to collapse the ranges an SPF record expands to.
 
 `parse_entry` turns one input line into a `Range`, and `Aggregator::add` takes
-ranges directly. `Aggregator::exclude` and `exclude_str` subtract ranges, in
+ranges directly. `overlapping` takes a slice of ranges and returns the
+indices of the ones that overlap another, in address order. `Aggregator::exclude` and `exclude_str` subtract ranges, in
 any order relative to `add`. `Range::new`, `Range::from_ips` and `Prefix::new` validate
 their arguments and return `None` for values outside the address family, so
 an invalid range or prefix cannot be constructed. `summarize` returns

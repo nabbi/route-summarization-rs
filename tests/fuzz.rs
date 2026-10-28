@@ -8,7 +8,7 @@
 mod common;
 
 use common::{Rng, addr_text, host_mask, run_cases, union, v6_exploded};
-use route_summarization::{Aggregator, Family, Prefix, Range, parse_entry};
+use route_summarization::{Aggregator, Family, Prefix, Range, overlapping, parse_entry};
 
 /// A random range in `family`, biased toward clustered, overlapping and
 /// adjacent inputs, with occasional huge prefixes and address-space edges.
@@ -207,6 +207,137 @@ fn summarizing_output_again_is_stable() {
             again.add_str(&p.to_string(), false).unwrap();
         }
         assert_eq!(once, again.summarize());
+    });
+}
+
+/// A mixed-family list of clustered ranges, with some exact duplicates.
+fn random_list(rng: &mut Rng, max: u64) -> Vec<Range> {
+    let base4 = u128::from(rng.next() as u32) & !0xfff;
+    let base6 = rng.u128() & !0xfff;
+    let mut ranges: Vec<Range> = Vec::new();
+    for _ in 0..rng.range(0, max) {
+        if !ranges.is_empty() && rng.chance(5) {
+            let dup = ranges[rng.below(ranges.len() as u64) as usize];
+            ranges.push(dup);
+            continue;
+        }
+        let family = random_family(rng);
+        let base = if family == Family::V4 { base4 } else { base6 };
+        ranges.push(random_range(rng, family, base));
+    }
+    ranges
+}
+
+fn shares_address(a: Range, b: Range) -> bool {
+    a.family() == b.family() && a.start() <= b.end() && b.start() <= a.end()
+}
+
+#[test]
+fn overlap_matches_pairwise_oracle() {
+    run_cases("overlap_matches_pairwise_oracle", 2000, |rng| {
+        let ranges = random_list(rng, 120);
+        let got = overlapping(&ranges);
+
+        // Exactly the entries that share an address with some other entry.
+        let want: Vec<usize> = (0..ranges.len())
+            .filter(|&i| (0..ranges.len()).any(|j| j != i && shares_address(ranges[i], ranges[j])))
+            .collect();
+        let mut sorted = got.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, want, "{ranges:?}");
+
+        // Each index once, in (family, start, wider first) order.
+        sorted.dedup();
+        assert_eq!(sorted.len(), got.len(), "duplicate index");
+        for w in got.windows(2) {
+            let (a, b) = (ranges[w[0]], ranges[w[1]]);
+            let key = |r: Range| (r.family(), r.start(), std::cmp::Reverse(r.end()));
+            assert!(key(a) <= key(b), "out of order: {a:?} before {b:?}");
+        }
+    });
+}
+
+#[test]
+fn overlap_does_not_depend_on_input_order() {
+    run_cases("overlap_does_not_depend_on_input_order", 1000, |rng| {
+        let ranges = random_list(rng, 80);
+        let mut shuffled = ranges.clone();
+        for i in (1..shuffled.len()).rev() {
+            let j = rng.below(i as u64 + 1) as usize;
+            shuffled.swap(i, j);
+        }
+        let pick =
+            |rs: &[Range]| -> Vec<Range> { overlapping(rs).into_iter().map(|i| rs[i]).collect() };
+        // Equal entries may swap places, but the printed list is the same.
+        assert_eq!(pick(&ranges), pick(&shuffled));
+    });
+}
+
+/// Address count, or `None` for a whole IPv6 space (2^128).
+fn size(r: Range) -> Option<u128> {
+    (r.end() - r.start()).checked_add(1)
+}
+
+/// Total addresses in disjoint ranges, or `None` if it exceeds u128.
+fn total(rs: impl Iterator<Item = Range>) -> Option<u128> {
+    rs.into_iter()
+        .try_fold(0u128, |acc, r| acc.checked_add(size(r)?))
+}
+
+#[test]
+fn overlap_agrees_with_aggregation() {
+    // Checked through the aggregator, independently of the sweep: the
+    // unreported entries are pairwise disjoint (their union holds as many
+    // addresses as their sizes add up to), and removing a reported entry
+    // uncovers fewer addresses than it holds (it shares one with the rest).
+    run_cases("overlap_agrees_with_aggregation", 1000, |rng| {
+        let ranges = random_list(rng, 80);
+        let hit = overlapping(&ranges);
+        for family in [Family::V4, Family::V6] {
+            let rest: Vec<(u128, u128)> = (0..ranges.len())
+                .filter(|i| !hit.contains(i) && ranges[*i].family() == family)
+                .map(|i| (ranges[i].start(), ranges[i].end()))
+                .collect();
+            let mut agg = Aggregator::new();
+            rest.iter()
+                .for_each(|&(s, e)| agg.add(Range::new(family, s, e).unwrap()));
+            let covered = total(agg.summarize().iter().map(Prefix::range));
+            let summed = rest.iter().try_fold(0u128, |acc, &(s, e)| {
+                acc.checked_add(size(Range::new(family, s, e).unwrap())?)
+            });
+            // Skipped when a count exceeds u128 (only a whole ::/0 or more).
+            if let (Some(a), Some(b)) = (summed, covered) {
+                assert_eq!(a, b, "{family:?} unreported entries overlap");
+            }
+        }
+        for &i in &hit {
+            let mut others = Aggregator::new();
+            let mut all = Aggregator::new();
+            for (j, r) in ranges.iter().enumerate() {
+                all.add(*r);
+                if j != i {
+                    others.add(*r);
+                }
+            }
+            let family = ranges[i].family();
+            let count = |a: &Aggregator| {
+                total(
+                    a.summarize()
+                        .iter()
+                        .filter(|p| p.family() == family)
+                        .map(Prefix::range),
+                )
+            };
+            if let (Some(with), Some(without)) = (count(&all), count(&others)) {
+                // `end - start` is the size minus one: at least one address
+                // of the entry is still covered by the others.
+                let r = ranges[i];
+                assert!(
+                    with - without <= r.end() - r.start(),
+                    "{r:?} shares nothing"
+                );
+            }
+        }
     });
 }
 

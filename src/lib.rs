@@ -317,6 +317,46 @@ impl Aggregator {
     }
 }
 
+/// Indices of the ranges that share at least one address with another range,
+/// in address order (family, start, then wider first). Containment counts
+/// (`10.0.0.0/23` and `10.0.1.0/24`), as do duplicates; adjacency does not.
+///
+/// ```
+/// use route_summarization::{overlapping, parse_entry};
+///
+/// let ranges: Vec<_> = ["10.0.1.0/24", "10.0.2.0/24", "10.0.0.0/23"]
+///     .iter()
+///     .map(|s| parse_entry(s, false).unwrap())
+///     .collect();
+/// assert_eq!(overlapping(&ranges), [2, 0]);
+/// ```
+pub fn overlapping(ranges: &[Range]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..ranges.len()).collect();
+    order.sort_by_key(|&i| {
+        let r = ranges[i];
+        (r.family, r.start, std::cmp::Reverse(r.end))
+    });
+    let mut hit = vec![false; ranges.len()];
+    // The earlier range reaching furthest. If a range starts within it, the
+    // two overlap; and any earlier range a later one overlaps was already
+    // marked when the furthest-reaching range (which overlaps it) went by.
+    let mut reach: Option<usize> = None;
+    for &i in &order {
+        let r = ranges[i];
+        match reach.map(|j| (j, ranges[j])) {
+            Some((j, f)) if f.family == r.family && r.start <= f.end => {
+                hit[i] = true;
+                hit[j] = true;
+                if r.end > f.end {
+                    reach = Some(i);
+                }
+            }
+            _ => reach = Some(i),
+        }
+    }
+    order.into_iter().filter(|&i| hit[i]).collect()
+}
+
 /// Sort and merge overlapping or adjacent ranges.
 fn merge(ranges: &[(u128, u128)]) -> Vec<(u128, u128)> {
     let mut sorted = ranges.to_vec();
@@ -699,6 +739,167 @@ mod tests {
 
         assert_eq!(agg_excluding(&["::/0"], &["::/1"]), ["8000::/1"]);
         assert_eq!(agg_excluding(&["::/0"], &["8000::/1"]), ["::/1"]);
+    }
+
+    fn overlaps<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+        let ranges: Vec<Range> = lines
+            .iter()
+            .map(|l| parse_entry(l, false).unwrap())
+            .collect();
+        overlapping(&ranges).into_iter().map(|i| lines[i]).collect()
+    }
+
+    #[test]
+    fn overlap_detects_containment_not_just_duplicates() {
+        assert_eq!(
+            overlaps(&["10.0.1.0/24", "10.0.0.0/23"]),
+            ["10.0.0.0/23", "10.0.1.0/24"]
+        );
+        assert_eq!(overlaps(&["10.0.0.0/24", "10.0.0.0/24"]).len(), 2);
+        assert_eq!(
+            overlaps(&["10.0.0.5", "10.0.0.0/29"]),
+            ["10.0.0.0/29", "10.0.0.5"]
+        );
+        // Partial overlap of ranges, neither containing the other.
+        assert_eq!(
+            overlaps(&["10.0.0.0-10.0.0.9", "10.0.0.9-10.0.0.20"]),
+            ["10.0.0.0-10.0.0.9", "10.0.0.9-10.0.0.20"]
+        );
+        // Adjacent, disjoint, or in different families: no overlap.
+        assert!(overlaps(&["10.0.0.0/24", "10.0.1.0/24", "10.0.3.0/24"]).is_empty());
+        assert!(overlaps(&["0.0.0.0/0", "::/0"]).is_empty());
+        assert!(overlaps(&["::/0", "::ffff:0.0.0.0/96"]).len() == 2);
+    }
+
+    #[test]
+    fn overlap_marks_every_member_of_a_nest() {
+        // The /24 overlaps the /25 inside it, even though the /16 reaches further.
+        assert_eq!(
+            overlaps(&["10.0.1.128/25", "10.0.0.0/16", "10.0.1.0/24", "10.1.0.0/24"]),
+            ["10.0.0.0/16", "10.0.1.0/24", "10.0.1.128/25"]
+        );
+        // A chain: each overlaps only its neighbour.
+        assert_eq!(
+            overlaps(&[
+                "10.0.0.0-10.0.0.5",
+                "10.0.0.5-10.0.0.9",
+                "10.0.0.9-10.0.0.12",
+                "10.0.0.13"
+            ]),
+            [
+                "10.0.0.0-10.0.0.5",
+                "10.0.0.5-10.0.0.9",
+                "10.0.0.9-10.0.0.12"
+            ]
+        );
+    }
+
+    #[test]
+    fn overlap_trivial_inputs() {
+        assert!(overlapping(&[]).is_empty());
+        assert!(overlaps(&["10.0.0.0/8"]).is_empty());
+        assert!(overlaps(&["::/0"]).is_empty());
+    }
+
+    #[test]
+    fn overlap_at_address_space_edges() {
+        // Full spaces overlap their own first and last addresses.
+        assert_eq!(
+            overlaps(&["255.255.255.255", "0.0.0.0/0", "0.0.0.0"]),
+            ["0.0.0.0/0", "0.0.0.0", "255.255.255.255"]
+        );
+        let top = "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff";
+        assert_eq!(overlaps(&[top, "::/0"]), ["::/0", top]);
+        assert_eq!(overlaps(&[top, "8000::/1", top]), ["8000::/1", top, top]);
+        // Halves of a space touch but don't overlap.
+        assert!(overlaps(&["::/1", "8000::/1"]).is_empty());
+        assert!(overlaps(&["0.0.0.0/1", "128.0.0.0/1"]).is_empty());
+        // Off by one either side of a boundary.
+        assert!(overlaps(&["10.0.0.0-10.0.0.255", "10.0.1.0"]).is_empty());
+        assert_eq!(overlaps(&["10.0.0.0-10.0.1.0", "10.0.1.0/24"]).len(), 2);
+    }
+
+    #[test]
+    fn overlap_keeps_families_apart() {
+        // Same numeric values in both families (0.0.0.0/8 vs ::/104).
+        assert!(overlaps(&["0.0.0.0/8", "::/104"]).is_empty());
+        assert!(overlaps(&["0.0.0.1", "::1"]).is_empty());
+        assert!(overlaps(&["0.0.0.0/0", "::/96"]).is_empty());
+        // An IPv4 run ending at the top of its space, then IPv6 starting at 0.
+        assert!(overlaps(&["255.0.0.0/8", "::/1"]).is_empty());
+        assert_eq!(
+            overlaps(&["::/1", "10.0.0.0/8", "::1", "10.1.0.0/16"]),
+            ["10.0.0.0/8", "10.1.0.0/16", "::/1", "::1"]
+        );
+    }
+
+    #[test]
+    fn overlap_orders_wider_first_and_ignores_input_order() {
+        let lines = ["10.0.0.0/25", "10.0.0.0/24", "10.0.0.0/23", "10.0.0.0"];
+        let want = ["10.0.0.0/23", "10.0.0.0/24", "10.0.0.0/25", "10.0.0.0"];
+        assert_eq!(overlaps(&lines), want);
+        let mut rev = lines;
+        rev.reverse();
+        assert_eq!(overlaps(&rev), want);
+    }
+
+    #[test]
+    fn overlap_with_a_late_wide_range() {
+        // Disjoint small ranges all fall inside a wider one that starts at the
+        // same address but sorts first; every one must be reported.
+        assert_eq!(
+            overlaps(&[
+                "10.0.0.4/30",
+                "10.0.0.0/30",
+                "10.0.0.8/30",
+                "10.0.0.0/28",
+                "10.0.0.16/30"
+            ]),
+            ["10.0.0.0/28", "10.0.0.0/30", "10.0.0.4/30", "10.0.0.8/30"]
+        );
+        // A long range starting mid-way picks up later entries the first
+        // furthest-reaching range doesn't.
+        assert_eq!(
+            overlaps(&[
+                "10.0.0.0/30",
+                "10.0.0.2-10.0.0.40",
+                "10.0.0.32/30",
+                "10.0.0.64/30"
+            ]),
+            ["10.0.0.0/30", "10.0.0.2-10.0.0.40", "10.0.0.32/30"]
+        );
+    }
+
+    #[test]
+    fn overlap_matches_brute_force() {
+        let mut seed = 0x2545f4914f6cdd1du64;
+        let mut rand = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..500 {
+            let ranges: Vec<Range> = (0..(rand() % 12 + 1))
+                .map(|_| {
+                    let len = 24 + (rand() % 9) as u8;
+                    let addr = (rand() % 1024) as u128 & !host_mask(Family::V4, len);
+                    Prefix::new(Family::V4, addr, len).unwrap().range()
+                })
+                .collect();
+            let mut got = overlapping(&ranges);
+            got.sort_unstable();
+            let want: Vec<usize> = (0..ranges.len())
+                .filter(|&i| {
+                    (0..ranges.len()).any(|j| {
+                        j != i
+                            && ranges[i].start <= ranges[j].end
+                            && ranges[j].start <= ranges[i].end
+                    })
+                })
+                .collect();
+            assert_eq!(got, want, "{ranges:?}");
+        }
     }
 
     #[test]
