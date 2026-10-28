@@ -1,6 +1,6 @@
 [package]
 name = "route-summarization"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Aggregate IPv4/IPv6 CIDR prefixes into their minimal covering set, with SPF ip4:/ip6: support"

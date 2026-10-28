@@ -4,4 +4,4 @@ version = 4
 
 [[package]]
 name = "route-summarization"
-version = "0.1.0"
+version = "0.1.1"

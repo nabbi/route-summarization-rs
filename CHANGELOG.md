@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 - 2026-10-28
 
 - `--overlap`: print only the input entries that overlap another entry
   (containment such as a `/23` and a `/24` inside it, partial overlap, or
